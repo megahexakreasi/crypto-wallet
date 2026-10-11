@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Shield, Lock, X, Delete, CheckCircle2, AlertCircle, KeyRound } from 'lucide-react';
-import { verifyStoredPin, setStoredPin } from '../services/security';
+import { Shield, Lock, X, Delete, CheckCircle2, AlertCircle, KeyRound, Clock } from 'lucide-react';
+import {
+  verifyStoredPin,
+  setStoredPin,
+  getPinLockoutStatus,
+  recordFailedPinAttempt,
+  resetPinLockout
+} from '../services/security';
 
 export const PinModal = ({
   isOpen,
@@ -21,8 +27,9 @@ export const PinModal = ({
   const [error, setError] = useState('');
   const [isShaking, setIsShaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
 
-  // Reset state when modal opens or closes
+  // Check lockout on open & reset state
   useEffect(() => {
     if (isOpen) {
       setPin('');
@@ -31,38 +38,73 @@ export const PinModal = ({
       setError('');
       setIsShaking(false);
       setIsProcessing(false);
+
+      if (mode === 'verify') {
+        const status = getPinLockoutStatus();
+        if (status.isLocked) {
+          setLockoutSeconds(status.remainingSeconds);
+        } else {
+          setLockoutSeconds(0);
+        }
+      } else {
+        setLockoutSeconds(0);
+      }
     }
   }, [isOpen, mode]);
 
+  // Lockout countdown timer
+  useEffect(() => {
+    if (lockoutSeconds <= 0) return;
+    const timer = setInterval(() => {
+      setLockoutSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          resetPinLockout();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [lockoutSeconds]);
+
+  // Format seconds to MM:SS
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   // Handle digit append
   const handleDigit = useCallback((digit) => {
-    if (isProcessing) return;
+    if (isProcessing || lockoutSeconds > 0) return;
     setError('');
     setPin((prev) => {
       if (prev.length >= 6) return prev;
       return prev + digit.toString();
     });
-  }, [isProcessing]);
+  }, [isProcessing, lockoutSeconds]);
 
   // Handle backspace / delete
   const handleDelete = useCallback(() => {
-    if (isProcessing) return;
+    if (isProcessing || lockoutSeconds > 0) return;
     setError('');
     setPin((prev) => prev.slice(0, -1));
-  }, [isProcessing]);
+  }, [isProcessing, lockoutSeconds]);
 
   // Handle clear
   const handleClear = useCallback(() => {
-    if (isProcessing) return;
+    if (isProcessing || lockoutSeconds > 0) return;
     setError('');
     setPin('');
-  }, [isProcessing]);
+  }, [isProcessing, lockoutSeconds]);
 
   // Physical keyboard listener
   useEffect(() => {
     if (!isOpen) return;
 
     const handleKeyDown = (e) => {
+      if (lockoutSeconds > 0) return;
       if (e.key >= '0' && e.key <= '9') {
         e.preventDefault();
         handleDigit(e.key);
@@ -77,7 +119,7 @@ export const PinModal = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, handleDigit, handleDelete, onCancel]);
+  }, [isOpen, handleDigit, handleDelete, onCancel, lockoutSeconds]);
 
   // Trigger shake effect on error
   const triggerShake = (msg) => {
@@ -89,7 +131,7 @@ export const PinModal = ({
 
   // Evaluate PIN when 6 digits are reached
   useEffect(() => {
-    if (pin.length !== 6) return;
+    if (pin.length !== 6 || lockoutSeconds > 0) return;
 
     let isSubscribed = true;
 
@@ -101,11 +143,18 @@ export const PinModal = ({
         if (!isSubscribed) return;
 
         if (isValid) {
+          resetPinLockout();
           setIsProcessing(false);
           onSuccess?.(pin);
         } else {
           setIsProcessing(false);
-          triggerShake('PIN yang Anda masukkan salah. Coba lagi.');
+          const lockoutRes = recordFailedPinAttempt();
+          if (lockoutRes.isLocked) {
+            setLockoutSeconds(lockoutRes.remainingSeconds);
+            triggerShake('PIN salah 5 kali! Akses dikunci selama 5 menit.');
+          } else {
+            triggerShake(`PIN salah! Sisa kesempatan: ${lockoutRes.remainingAttempts} kali.`);
+          }
         }
       } else if (mode === 'setup') {
         if (setupStep === 'enter') {
@@ -119,6 +168,7 @@ export const PinModal = ({
           if (pin === firstPin) {
             try {
               await setStoredPin(pin);
+              resetPinLockout();
               if (!isSubscribed) return;
               setIsProcessing(false);
               onSuccess?.(pin);
@@ -142,7 +192,7 @@ export const PinModal = ({
       isSubscribed = false;
       clearTimeout(timer);
     };
-  }, [pin, mode, setupStep, firstPin, onSuccess]);
+  }, [pin, mode, setupStep, firstPin, onSuccess, lockoutSeconds]);
 
   if (!isOpen) return null;
 
@@ -238,194 +288,251 @@ export const PinModal = ({
           {displaySubtitle}
         </p>
 
-        {/* 6 PIN Dot Indicators with Shake on Error */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: '14px',
-            marginBottom: '20px',
-            transform: isShaking ? 'translateX(-8px)' : 'none',
-            transition: 'transform 0.08s ease'
-          }}
-        >
-          {[0, 1, 2, 3, 4, 5].map((idx) => {
-            const isFilled = pin.length > idx;
-            return (
-              <div
-                key={idx}
-                style={{
-                  width: '14px',
-                  height: '14px',
-                  borderRadius: '50%',
-                  transition: 'all 0.18s cubic-bezier(0.4, 0, 0.2, 1)',
-                  background: isFilled
-                    ? (mode === 'setup' ? '#10b981' : '#6366f1')
-                    : 'rgba(255, 255, 255, 0.12)',
-                  border: isFilled
-                    ? `2px solid ${mode === 'setup' ? '#34d399' : '#818cf8'}`
-                    : '1px solid rgba(255, 255, 255, 0.2)',
-                  boxShadow: isFilled
-                    ? `0 0 12px ${mode === 'setup' ? 'rgba(16, 185, 129, 0.6)' : 'rgba(99, 102, 241, 0.6)'}`
-                    : 'none',
-                  transform: isFilled ? 'scale(1.15)' : 'scale(1)'
-                }}
-              />
-            );
-          })}
-        </div>
-
-        {/* Error Feedback */}
-        {error ? (
+        {/* Conditional rendering: Lockout Countdown vs Active Keypad */}
+        {lockoutSeconds > 0 ? (
           <div style={{
-            fontSize: '0.78rem',
-            color: '#f87171',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '6px',
-            minHeight: '22px',
-            marginBottom: '16px'
+            background: 'rgba(239, 68, 68, 0.08)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            borderRadius: '20px',
+            padding: '24px 18px',
+            margin: '10px 0 24px 0',
+            textAlign: 'center'
           }}>
-            <AlertCircle size={14} />
-            <span>{error}</span>
+            <div style={{
+              width: '56px',
+              height: '56px',
+              borderRadius: '16px',
+              background: 'rgba(239, 68, 68, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#f87171',
+              margin: '0 auto 14px auto'
+            }}>
+              <Clock size={28} />
+            </div>
+
+            <div style={{
+              fontSize: '2.5rem',
+              fontWeight: 800,
+              fontFamily: 'var(--font-mono)',
+              color: '#f87171',
+              letterSpacing: '2px',
+              marginBottom: '8px'
+            }}>
+              {formatTime(lockoutSeconds)}
+            </div>
+
+            <div style={{
+              fontSize: '0.825rem',
+              color: '#fca5a5',
+              lineHeight: 1.5,
+              marginBottom: '16px'
+            }}>
+              PIN salah sebanyak 5 kali berturut-turut. Akses dikunci sementara selama 5 menit untuk melindungi aset Anda dari serangan brute-force.
+            </div>
+
+            <button
+              type="button"
+              onClick={onCancel}
+              className="btn btn-secondary"
+              style={{ padding: '8px 20px', fontSize: '0.825rem' }}
+            >
+              Tutup
+            </button>
           </div>
         ) : (
-          <div style={{ minHeight: '22px', marginBottom: '16px' }}>
-            {mode === 'setup' && setupStep === 'confirm' && (
-              <span style={{ fontSize: '0.78rem', color: '#6ee7b7' }}>
-                Langkah 2 dari 2: Ketik ulang PIN yang sama
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Keypad Grid (1-9, C, 0, Backspace) */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: '12px',
-          maxWidth: '280px',
-          margin: '0 auto 10px auto'
-        }}>
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-            <button
-              key={num}
-              type="button"
-              onClick={() => handleDigit(num)}
-              disabled={isProcessing}
+          <>
+            {/* 6 PIN Dot Indicators with Shake on Error */}
+            <div
               style={{
-                height: '56px',
-                borderRadius: '16px',
-                background: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                color: '#ffffff',
-                fontSize: '1.35rem',
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.12s ease',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                gap: '14px',
+                marginBottom: '20px',
+                transform: isShaking ? 'translateX(-8px)' : 'none',
+                transition: 'transform 0.08s ease'
+              }}
+            >
+              {[0, 1, 2, 3, 4, 5].map((idx) => {
+                const isFilled = pin.length > idx;
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      width: '14px',
+                      height: '14px',
+                      borderRadius: '50%',
+                      transition: 'all 0.18s cubic-bezier(0.4, 0, 0.2, 1)',
+                      background: isFilled
+                        ? (mode === 'setup' ? '#10b981' : '#6366f1')
+                        : 'rgba(255, 255, 255, 0.12)',
+                      border: isFilled
+                        ? `2px solid ${mode === 'setup' ? '#34d399' : '#818cf8'}`
+                        : '1px solid rgba(255, 255, 255, 0.2)',
+                      boxShadow: isFilled
+                        ? `0 0 12px ${mode === 'setup' ? 'rgba(16, 185, 129, 0.6)' : 'rgba(99, 102, 241, 0.6)'}`
+                        : 'none',
+                      transform: isFilled ? 'scale(1.15)' : 'scale(1)'
+                    }}
+                  />
+                );
+              })}
+            </div>
+
+            {/* Error Feedback */}
+            {error ? (
+              <div style={{
+                fontSize: '0.78rem',
+                color: '#f87171',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                userSelect: 'none'
-              }}
-              onMouseDown={(e) => {
-                e.currentTarget.style.transform = 'scale(0.92)';
-                e.currentTarget.style.background = 'rgba(99, 102, 241, 0.25)';
-              }}
-              onMouseUp={(e) => {
-                e.currentTarget.style.transform = 'scale(1)';
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'scale(1)';
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-              }}
-            >
-              {num}
-            </button>
-          ))}
+                gap: '6px',
+                minHeight: '22px',
+                marginBottom: '16px'
+              }}>
+                <AlertCircle size={14} />
+                <span>{error}</span>
+              </div>
+            ) : (
+              <div style={{ minHeight: '22px', marginBottom: '16px' }}>
+                {mode === 'setup' && setupStep === 'confirm' && (
+                  <span style={{ fontSize: '0.78rem', color: '#6ee7b7' }}>
+                    Langkah 2 dari 2: Ketik ulang PIN yang sama
+                  </span>
+                )}
+              </div>
+            )}
 
-          {/* Clear button */}
-          <button
-            type="button"
-            onClick={handleClear}
-            disabled={isProcessing || pin.length === 0}
-            style={{
-              height: '56px',
-              borderRadius: '16px',
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-muted)',
-              fontSize: '0.85rem',
-              fontWeight: 600,
-              cursor: pin.length === 0 ? 'default' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: pin.length === 0 ? 0.3 : 1
-            }}
-          >
-            HAPUS
-          </button>
+            {/* Keypad Grid (1-9, C, 0, Backspace) */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: '12px',
+              maxWidth: '280px',
+              margin: '0 auto 10px auto'
+            }}>
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => handleDigit(num)}
+                  disabled={isProcessing}
+                  style={{
+                    height: '56px',
+                    borderRadius: '16px',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    color: '#ffffff',
+                    fontSize: '1.35rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.12s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    userSelect: 'none'
+                  }}
+                  onMouseDown={(e) => {
+                    e.currentTarget.style.transform = 'scale(0.92)';
+                    e.currentTarget.style.background = 'rgba(99, 102, 241, 0.25)';
+                  }}
+                  onMouseUp={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                  }}
+                >
+                  {num}
+                </button>
+              ))}
 
-          {/* Zero button */}
-          <button
-            type="button"
-            onClick={() => handleDigit(0)}
-            disabled={isProcessing}
-            style={{
-              height: '56px',
-              borderRadius: '16px',
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-              color: '#ffffff',
-              fontSize: '1.35rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              userSelect: 'none'
-            }}
-            onMouseDown={(e) => {
-              e.currentTarget.style.transform = 'scale(0.92)';
-              e.currentTarget.style.background = 'rgba(99, 102, 241, 0.25)';
-            }}
-            onMouseUp={(e) => {
-              e.currentTarget.style.transform = 'scale(1)';
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = 'scale(1)';
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-            }}
-          >
-            0
-          </button>
+              {/* Clear button */}
+              <button
+                type="button"
+                onClick={handleClear}
+                disabled={isProcessing || pin.length === 0}
+                style={{
+                  height: '56px',
+                  borderRadius: '16px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: pin.length === 0 ? 'default' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  opacity: pin.length === 0 ? 0.3 : 1
+                }}
+              >
+                HAPUS
+              </button>
 
-          {/* Backspace button */}
-          <button
-            type="button"
-            onClick={handleDelete}
-            disabled={isProcessing || pin.length === 0}
-            style={{
-              height: '56px',
-              borderRadius: '16px',
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-muted)',
-              cursor: pin.length === 0 ? 'default' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: pin.length === 0 ? 0.3 : 1
-            }}
-          >
-            <Delete size={22} />
-          </button>
-        </div>
+              {/* Zero button */}
+              <button
+                type="button"
+                onClick={() => handleDigit(0)}
+                disabled={isProcessing}
+                style={{
+                  height: '56px',
+                  borderRadius: '16px',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  color: '#ffffff',
+                  fontSize: '1.35rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  userSelect: 'none'
+                }}
+                onMouseDown={(e) => {
+                  e.currentTarget.style.transform = 'scale(0.92)';
+                  e.currentTarget.style.background = 'rgba(99, 102, 241, 0.25)';
+                }}
+                onMouseUp={(e) => {
+                  e.currentTarget.style.transform = 'scale(1)';
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'scale(1)';
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                }}
+              >
+                0
+              </button>
+
+              {/* Backspace button */}
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={isProcessing || pin.length === 0}
+                style={{
+                  height: '56px',
+                  borderRadius: '16px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: pin.length === 0 ? 'default' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  opacity: pin.length === 0 ? 0.3 : 1
+                }}
+              >
+                <Delete size={22} />
+              </button>
+            </div>
+          </>
+        )}
 
         {/* Security badge note */}
         <div style={{

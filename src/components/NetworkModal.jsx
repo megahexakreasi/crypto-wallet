@@ -52,13 +52,19 @@ export const NetworkModal = ({
       return;
     }
 
+    const trimmedRpc = formRpcUrl.trim();
+    if (!trimmedRpc.startsWith('https://') && !trimmedRpc.startsWith('http://localhost') && !trimmedRpc.startsWith('http://127.0.0.1')) {
+      onNotify?.('Demi keamanan, RPC URL wajib menggunakan protokol HTTPS!', 'error');
+      return;
+    }
+
     const updated = {
       id: editingNetwork ? editingNetwork.id : 'custom-' + Date.now(),
       name: formName.trim(),
       shortName: formSymbol.trim(),
       chainId: parseInt(formChainId, 10),
       symbol: formSymbol.trim().toUpperCase(),
-      rpcUrl: formRpcUrl.trim(),
+      rpcUrl: trimmedRpc,
       explorerUrl: formExplorerUrl.trim(),
       blockscoutApi: formBlockscoutApi.trim(),
       isTestnet: false,

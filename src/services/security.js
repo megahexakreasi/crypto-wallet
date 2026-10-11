@@ -5,6 +5,70 @@
 
 const PIN_STORAGE_KEY = 'cryptowallet_security_pin';
 const SESSION_PIN_KEY = 'cryptowallet_session_pin';
+const LOCKOUT_STORAGE_KEY = 'cryptowallet_pin_lockout';
+export const MAX_PIN_ATTEMPTS = 5;
+export const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get current PIN lockout status
+ */
+export const getPinLockoutStatus = () => {
+  try {
+    const raw = localStorage.getItem(LOCKOUT_STORAGE_KEY);
+    if (!raw) return { isLocked: false, remainingSeconds: 0, attempts: 0 };
+    const data = JSON.parse(raw);
+    const now = Date.now();
+    if (data.lockUntil && data.lockUntil > now) {
+      const remainingSeconds = Math.ceil((data.lockUntil - now) / 1000);
+      return { isLocked: true, remainingSeconds, attempts: data.attempts || MAX_PIN_ATTEMPTS };
+    }
+    // Lockout expired, clean up
+    if (data.lockUntil && data.lockUntil <= now) {
+      localStorage.removeItem(LOCKOUT_STORAGE_KEY);
+      return { isLocked: false, remainingSeconds: 0, attempts: 0 };
+    }
+    return { isLocked: false, remainingSeconds: 0, attempts: data.attempts || 0 };
+  } catch {
+    return { isLocked: false, remainingSeconds: 0, attempts: 0 };
+  }
+};
+
+/**
+ * Record a failed PIN attempt and lock for 5 minutes if 5 failures reached
+ */
+export const recordFailedPinAttempt = () => {
+  try {
+    const raw = localStorage.getItem(LOCKOUT_STORAGE_KEY);
+    let attempts = 0;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      attempts = parsed.attempts || 0;
+    }
+    attempts += 1;
+
+    if (attempts >= MAX_PIN_ATTEMPTS) {
+      const lockUntil = Date.now() + LOCKOUT_DURATION_MS;
+      localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify({ attempts, lockUntil }));
+      return { isLocked: true, remainingSeconds: 300, attempts, remainingAttempts: 0 };
+    }
+
+    localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify({ attempts, lockUntil: null }));
+    return { isLocked: false, remainingSeconds: 0, attempts, remainingAttempts: MAX_PIN_ATTEMPTS - attempts };
+  } catch {
+    return { isLocked: false, remainingSeconds: 0, attempts: 1, remainingAttempts: MAX_PIN_ATTEMPTS - 1 };
+  }
+};
+
+/**
+ * Reset lockout state after successful PIN entry
+ */
+export const resetPinLockout = () => {
+  try {
+    localStorage.removeItem(LOCKOUT_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+};
 
 // Helper: Uint8Array <-> Base64
 const arrayBufferToBase64 = (buffer) => {

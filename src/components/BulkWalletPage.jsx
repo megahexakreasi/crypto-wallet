@@ -89,7 +89,23 @@ export const BulkWalletPage = ({
     if (!text) return;
     navigator.clipboard.writeText(text);
     setCopiedId(id);
-    onNotify?.(message, 'success');
+    const isSensitive = message.toLowerCase().includes('private key') || message.toLowerCase().includes('seed');
+    if (isSensitive) {
+      onNotify?.(`${message} (Otomatis dihapus dari clipboard dlm 45 detik)`, 'success');
+      setTimeout(async () => {
+        try {
+          const current = await navigator.clipboard.readText();
+          if (current === text) {
+            await navigator.clipboard.writeText('');
+            onNotify?.('Clipboard kunci privat telah dibersihkan otomatis demi keamanan.', 'info');
+          }
+        } catch {
+          // ignore
+        }
+      }, 45000);
+    } else {
+      onNotify?.(message, 'success');
+    }
     setTimeout(() => setCopiedId(null), 2000);
   };
 

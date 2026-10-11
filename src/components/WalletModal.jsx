@@ -45,7 +45,24 @@ export const WalletModal = ({
   const handleCopy = (text, label) => {
     navigator.clipboard.writeText(text);
     setCopiedText(label);
-    onNotify?.(`${label} berhasil disalin!`, 'success');
+    const isSensitive = label.toLowerCase().includes('private key') || label.toLowerCase().includes('seed');
+    if (isSensitive) {
+      onNotify?.(`${label} disalin! (Otomatis dihapus dari clipboard dlm 45 detik)`, 'success');
+      // Auto-clear clipboard after 45s for security
+      setTimeout(async () => {
+        try {
+          const current = await navigator.clipboard.readText();
+          if (current === text) {
+            await navigator.clipboard.writeText('');
+            onNotify?.('Clipboard kunci rahasia telah dibersihkan otomatis.', 'info');
+          }
+        } catch {
+          // ignore
+        }
+      }, 45000);
+    } else {
+      onNotify?.(`${label} berhasil disalin!`, 'success');
+    }
     setTimeout(() => setCopiedText(null), 2000);
   };
 
