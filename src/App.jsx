@@ -11,6 +11,7 @@ import { WalletModal } from './components/WalletModal';
 import { ScanQrModal } from './components/ScanQrModal';
 import { Notification } from './components/Notification';
 import { BulkWalletPage } from './components/BulkWalletPage';
+import { OnboardingView } from './components/OnboardingView';
 
 import { DEFAULT_NETWORKS, DEFAULT_TOKENS } from './constants/networks';
 import {
@@ -58,37 +59,24 @@ export function App() {
   // 2. Wallets State
   const [wallets, setWallets] = useState(() => {
     const stored = getStoredWallets();
-    const demoWallet = {
-      id: 'wallet_mtt_user',
-      name: 'Akun MTT (0xa6b3...)',
-      address: '0xa6b3aF2b471C7E1bB110e04b5a897610A86b0824',
-      mnemonic: null,
-      privateKey: null,
-      isWatchOnly: true,
-      createdAt: Date.now()
-    };
-
-    if (stored.length > 0) {
-      if (!stored.some((w) => w.address.toLowerCase() === demoWallet.address.toLowerCase())) {
-        const mergedWallets = [demoWallet, ...stored];
-        saveWallets(mergedWallets);
-        return mergedWallets;
-      }
-      return stored;
+    // Filter out the legacy demo wallet if present
+    const filtered = (stored || []).filter((w) => w.id !== 'wallet_mtt_user');
+    if (stored && filtered.length !== stored.length) {
+      saveWallets(filtered);
     }
-
-    const initial = createNewWallet('Wallet Lokal');
-    const defaultList = [demoWallet, initial];
-    saveWallets(defaultList);
-    setActiveWalletAddress(demoWallet.address);
-    return defaultList;
+    return filtered;
   });
 
   const [activeAddress, setActiveAddressState] = useState(() => {
-    return getActiveWalletAddress() || '0xa6b3aF2b471C7E1bB110e04b5a897610A86b0824';
+    const current = getActiveWalletAddress();
+    if (current && current.toLowerCase() === '0xa6b3af2b471c7e1bb110e04b5a897610a86b0824') {
+      setActiveWalletAddress('');
+      return null;
+    }
+    return current || null;
   });
 
-  const activeWallet = wallets.find((w) => w.address.toLowerCase() === activeAddress?.toLowerCase()) || wallets[0];
+  const activeWallet = wallets.find((w) => w.address?.toLowerCase() === activeAddress?.toLowerCase()) || wallets[0] || null;
 
   // 3. Tokens State
   const [tokensMap, setTokensMap] = useState(() => {
@@ -293,13 +281,28 @@ export function App() {
     }
   };
 
+  // Handle Wallet Created or Imported from Onboarding
+  const handleWalletReady = (readyWallet) => {
+    const updated = [...wallets, readyWallet];
+    setWallets(updated);
+    saveWallets(updated);
+    setActiveAddressState(readyWallet.address);
+    setActiveWalletAddress(readyWallet.address);
+    showNotification(`Wallet "${readyWallet.name}" berhasil disiapkan & aktif!`, 'success');
+  };
+
   // Wallet Remove
   const handleRemoveWallet = (id) => {
     const updated = wallets.filter((w) => w.id !== id);
     setWallets(updated);
     saveWallets(updated);
-    if (activeWallet.id === id && updated.length > 0) {
-      handleSelectWallet(updated[0]);
+    if (activeWallet?.id === id) {
+      if (updated.length > 0) {
+        handleSelectWallet(updated[0]);
+      } else {
+        setActiveAddressState(null);
+        setActiveWalletAddress('');
+      }
     }
     showNotification('Wallet berhasil dihapus.', 'info');
   };
@@ -378,8 +381,14 @@ export function App() {
         onNotify={showNotification}
       />
 
-      {/* Conditional View: Bulk Wallet Tools vs Main Wallet Dashboard */}
-      {currentPage === 'bulk' || currentPage === 'sweep' ? (
+      {/* Conditional View: Onboarding (if no wallets) vs Bulk Tools vs Main Dashboard */}
+      {wallets.length === 0 ? (
+        <OnboardingView
+          onWalletReady={handleWalletReady}
+          onNotify={showNotification}
+          onOpenScanQr={() => setScanQrModalOpen(true)}
+        />
+      ) : currentPage === 'bulk' || currentPage === 'sweep' ? (
         <BulkWalletPage
           network={activeNetwork}
           networks={networks}
