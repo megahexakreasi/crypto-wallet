@@ -433,6 +433,7 @@ export function App() {
             network={activeNetwork}
             activeWallet={activeWallet}
             nativeBalance={nativeBalance}
+            tokens={enrichedTokens}
             isLoading={isLoadingData}
             onRefresh={loadWalletData}
           />

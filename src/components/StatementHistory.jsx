@@ -38,6 +38,7 @@ export const StatementHistory = ({
   network,
   activeWallet,
   nativeBalance,
+  tokens = [],
   isLoading,
   onRefresh
 }) => {
@@ -223,16 +224,22 @@ export const StatementHistory = ({
     };
   }, [filteredTransactions]);
 
-  // Running balance calculation (for native transactions and gas fees)
+  // Running balance calculation (for native transactions, gas fees, and tokens)
   const runningBalances = useMemo(() => {
-    const currentBal = parseFloat(nativeBalance || '0');
-    const nativeTxs = filteredTransactions.filter((tx) => tx.type === 'native' || tx.type === 'internal' || tx.isGasFeeEntry);
     const balances = new Map();
 
-    let runningBal = currentBal;
-    // Start from most recent, go backwards
+    // 1. Native & Gas Fee Running Balances
+    const currentNativeBal = parseFloat(nativeBalance || '0');
+    const nativeTxs = filteredTransactions.filter(
+      (tx) => tx.type === 'native' || tx.type === 'internal' || tx.isGasFeeEntry
+    );
+    let runningNativeBal = currentNativeBal;
+
     nativeTxs.forEach((tx) => {
-      balances.set(tx.uniqueKey || tx.hash, runningBal);
+      balances.set(tx.uniqueKey || tx.hash, {
+        balance: Math.max(0, runningNativeBal),
+        symbol: network.symbol
+      });
       if (tx.isGasFeeEntry) {
         let gasVal = 0;
         if (tx.gasUsed && tx.gasPrice) {
@@ -240,19 +247,50 @@ export const StatementHistory = ({
             gasVal = Number(BigInt(tx.gasUsed) * BigInt(tx.gasPrice)) / 1e18;
           } catch { gasVal = 0; }
         }
-        runningBal += gasVal;
+        runningNativeBal += gasVal;
       } else {
         const val = parseFloat(tx.value || '0');
         if (tx.isOutgoing) {
-          runningBal += val; // undo the outgoing to get previous balance
+          runningNativeBal += val; // undo the outgoing to get previous balance
         } else {
-          runningBal -= val; // undo the incoming to get previous balance
+          runningNativeBal -= val; // undo the incoming to get previous balance
         }
       }
     });
 
+    // 2. Token Running Balances (grouped per token contract / symbol)
+    const tokenTxs = filteredTransactions.filter((tx) => tx.type === 'token');
+    const tokenGroups = {};
+    tokenTxs.forEach((tx) => {
+      const key = (tx.contractAddress || tx.symbol || '').toLowerCase();
+      if (!tokenGroups[key]) tokenGroups[key] = [];
+      tokenGroups[key].push(tx);
+    });
+
+    Object.keys(tokenGroups).forEach((tokenKey) => {
+      const txList = tokenGroups[tokenKey];
+      const tokenObj = tokens.find(
+        (t) => (t.address || '').toLowerCase() === tokenKey || (t.symbol || '').toLowerCase() === tokenKey
+      );
+      const currentTokenBal = parseFloat(tokenObj?.balance || '0');
+
+      let runningTokenBal = currentTokenBal;
+      txList.forEach((tx) => {
+        balances.set(tx.uniqueKey || tx.hash, {
+          balance: Math.max(0, runningTokenBal),
+          symbol: tx.symbol || tokenObj?.symbol || 'TOKEN'
+        });
+        const val = parseFloat(tx.value || '0');
+        if (tx.isOutgoing) {
+          runningTokenBal += val;
+        } else {
+          runningTokenBal -= val;
+        }
+      });
+    });
+
     return balances;
-  }, [filteredTransactions, nativeBalance]);
+  }, [filteredTransactions, nativeBalance, tokens, network]);
 
   const handleCopyHash = (hash) => {
     navigator.clipboard.writeText(hash);
@@ -1049,7 +1087,7 @@ export const StatementHistory = ({
 
                       {/* Col 6: Saldo Akhir */}
                       <div style={{ textAlign: 'right', minWidth: 0 }}>
-                        {rb !== undefined && (tx.type === 'native' || tx.type === 'internal' || isGasFee) ? (
+                        {rb !== undefined ? (
                           <>
                             <div style={{
                               fontWeight: 700,
@@ -1058,10 +1096,16 @@ export const StatementHistory = ({
                               fontFamily: 'var(--font-mono)',
                               letterSpacing: '-0.02em'
                             }}>
-                              {formatCurrency(rb)}
+                              {formatCurrency(typeof rb === 'object' ? rb.balance : rb, isToken ? 4 : 4)}
                             </div>
-                            <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '1px' }}>
-                              {network.symbol}
+                            <div style={{
+                              fontSize: '0.6rem',
+                              color: isToken ? '#818cf8' : 'var(--text-muted)',
+                              fontFamily: 'var(--font-mono)',
+                              marginTop: '1px',
+                              fontWeight: isToken ? 600 : 400
+                            }}>
+                              {typeof rb === 'object' ? rb.symbol : (isGasFee ? network.symbol : coinSymbol)}
                             </div>
                           </>
                         ) : (
