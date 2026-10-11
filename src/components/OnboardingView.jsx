@@ -23,6 +23,8 @@ import {
   importWatchOnlyWallet,
   formatAddress
 } from '../services/wallet';
+import { PinModal } from './PinModal';
+import { hasPinConfigured, getSessionPin, encryptWallet } from '../services/security';
 
 export const OnboardingView = ({ onWalletReady, onNotify, onOpenScanQr }) => {
   // 'welcome' | 'create' | 'import'
@@ -40,6 +42,10 @@ export const OnboardingView = ({ onWalletReady, onNotify, onOpenScanQr }) => {
   const [importName, setImportName] = useState('Akun Import');
   const [importError, setImportError] = useState('');
   const [showInputKey, setShowInputKey] = useState(false);
+
+  // PIN security states
+  const [pendingWallet, setPendingWallet] = useState(null);
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
 
   // Generate wallet when entering 'create' step
   const handleStartCreate = () => {
@@ -62,14 +68,28 @@ export const OnboardingView = ({ onWalletReady, onNotify, onOpenScanQr }) => {
     setTimeout(() => setIsCopied(false), 2500);
   };
 
-  const handleFinishCreate = () => {
+  const handleFinishCreate = async () => {
     if (!newWallet) return;
     const finalWallet = {
       ...newWallet,
       name: newWalletName.trim() || 'Dompet Utama'
     };
-    onWalletReady(finalWallet);
-    onNotify?.('Wallet baru berhasil dibuat & disimpan lokal!', 'success');
+
+    if (!hasPinConfigured()) {
+      setPendingWallet(finalWallet);
+      setIsPinModalOpen(true);
+      return;
+    }
+
+    const sessionPin = getSessionPin();
+    if (sessionPin) {
+      const encrypted = await encryptWallet(finalWallet, sessionPin);
+      onWalletReady(encrypted);
+    } else {
+      setPendingWallet(finalWallet);
+      setIsPinModalOpen(true);
+    }
+    onNotify?.('Wallet baru berhasil dibuat & disimpan aman!', 'success');
   };
 
   const handlePasteClipboard = async () => {
@@ -85,7 +105,7 @@ export const OnboardingView = ({ onWalletReady, onNotify, onOpenScanQr }) => {
     }
   };
 
-  const handleImportSubmit = (e) => {
+  const handleImportSubmit = async (e) => {
     e.preventDefault();
     setImportError('');
 
@@ -104,10 +124,45 @@ export const OnboardingView = ({ onWalletReady, onNotify, onOpenScanQr }) => {
         imported = importWatchOnlyWallet(importInput, importName || 'Akun Pantau');
       }
 
-      onWalletReady(imported);
-      onNotify?.(`Wallet "${imported.name}" berhasil diimpor!`, 'success');
+      if (imported.isWatchOnly) {
+        onWalletReady(imported);
+        onNotify?.(`Wallet Pantau "${imported.name}" berhasil diimpor!`, 'success');
+        return;
+      }
+
+      if (!hasPinConfigured()) {
+        setPendingWallet(imported);
+        setIsPinModalOpen(true);
+        return;
+      }
+
+      const sessionPin = getSessionPin();
+      if (sessionPin) {
+        const encrypted = await encryptWallet(imported, sessionPin);
+        onWalletReady(encrypted);
+        onNotify?.(`Wallet "${imported.name}" berhasil diimpor & dienkripsi!`, 'success');
+      } else {
+        setPendingWallet(imported);
+        setIsPinModalOpen(true);
+      }
     } catch (err) {
       setImportError(err.message || 'Format tidak valid. Periksa kembali input Anda.');
+    }
+  };
+
+  const handlePinSuccess = async (pin) => {
+    setIsPinModalOpen(false);
+    if (!pendingWallet) return;
+
+    try {
+      const encrypted = await encryptWallet(pendingWallet, pin);
+      onWalletReady(encrypted);
+      onNotify?.(`Wallet "${pendingWallet.name}" berhasil diamankan & dienkripsi!`, 'success');
+    } catch (err) {
+      console.error('Encryption error:', err);
+      onWalletReady(pendingWallet);
+    } finally {
+      setPendingWallet(null);
     }
   };
 
@@ -635,6 +690,23 @@ export const OnboardingView = ({ onWalletReady, onNotify, onOpenScanQr }) => {
           </form>
         </div>
       )}
+
+      {/* Setup 6-digit PIN Modal */}
+      <PinModal
+        isOpen={isPinModalOpen}
+        mode={hasPinConfigured() ? 'verify' : 'setup'}
+        title={hasPinConfigured() ? 'Verifikasi PIN Anda' : 'Buat PIN Keamanan (6 Digit)'}
+        subtitle={
+          hasPinConfigured()
+            ? 'Masukkan PIN untuk mengenkripsi dan mengamankan wallet baru Anda.'
+            : 'PIN ini akan digunakan untuk mengenkripsi private key & menyetujui transaksi Anda.'
+        }
+        onSuccess={handlePinSuccess}
+        onCancel={() => {
+          setIsPinModalOpen(false);
+          setPendingWallet(null);
+        }}
+      />
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { ShieldAlert } from 'lucide-react';
 import { Header } from './components/Header';
 import { BalanceCard } from './components/BalanceCard';
 import { TokenList } from './components/TokenList';
@@ -12,6 +13,7 @@ import { ScanQrModal } from './components/ScanQrModal';
 import { Notification } from './components/Notification';
 import { BulkWalletPage } from './components/BulkWalletPage';
 import { OnboardingView } from './components/OnboardingView';
+import { PinModal } from './components/PinModal';
 
 import { DEFAULT_NETWORKS, DEFAULT_TOKENS } from './constants/networks';
 import {
@@ -31,6 +33,7 @@ import {
 import { createNewWallet } from './services/wallet';
 import { fetchNativeBalance, fetchTransactionHistory, fetchTokenTransferHistory, fetchInternalTransactionHistory } from './services/blockscout';
 import { fetchTokenBalance } from './services/tokens';
+import { hasPinConfigured, encryptWalletsList } from './services/security';
 
 export function App() {
   // Navigation View: 'main' (Single Wallet Dashboard) or 'bulk' (Bulk Tools)
@@ -117,6 +120,8 @@ export function App() {
   const [addTokenModalOpen, setAddTokenModalOpen] = useState(false);
   const [scanQrModalOpen, setScanQrModalOpen] = useState(false);
   const [sendInitialToken, setSendInitialToken] = useState(null);
+  const [hasPin, setHasPin] = useState(() => hasPinConfigured());
+  const [setupPinModalOpen, setSetupPinModalOpen] = useState(false);
 
   // 6. Toast Notifications
   const [notification, setNotification] = useState(null);
@@ -124,6 +129,20 @@ export function App() {
   const showNotification = useCallback((message, type = 'info') => {
     setNotification({ message, type });
   }, []);
+
+  const handleSetupPinSuccess = async (newPin) => {
+    setSetupPinModalOpen(false);
+    setHasPin(true);
+    try {
+      const encrypted = await encryptWalletsList(wallets, newPin);
+      setWallets(encrypted);
+      saveWallets(encrypted);
+      showNotification('PIN Keamanan aktif! Semua data dompet Anda berhasil dienkripsi.', 'success');
+    } catch (err) {
+      console.error('Error encrypting wallets:', err);
+      showNotification('PIN tersimpan, namun enkripsi tertunda: ' + err.message, 'warning');
+    }
+  };
 
   useEffect(() => {
     if (notification) {
@@ -288,6 +307,7 @@ export function App() {
     saveWallets(updated);
     setActiveAddressState(readyWallet.address);
     setActiveWalletAddress(readyWallet.address);
+    setHasPin(hasPinConfigured());
     showNotification(`Wallet "${readyWallet.name}" berhasil disiapkan & aktif!`, 'success');
   };
 
@@ -401,6 +421,65 @@ export function App() {
         />
       ) : (
         <>
+          {/* Security Recommendation Banner if PIN not yet configured */}
+          {!hasPin && (
+            <div style={{
+              maxWidth: '680px',
+              margin: '0 auto 16px auto',
+              padding: '12px 18px',
+              borderRadius: '16px',
+              background: 'linear-gradient(90deg, rgba(245, 158, 11, 0.14) 0%, rgba(217, 119, 6, 0.08) 100%)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              boxShadow: '0 4px 18px rgba(245, 158, 11, 0.08)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '10px',
+                  background: 'rgba(245, 158, 11, 0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fbbf24',
+                  flexShrink: 0
+                }}>
+                  <ShieldAlert size={20} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.88rem', color: '#fef3c7' }}>
+                    Amankan Dompet dengan 6-Digit PIN
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: '#fde68a', opacity: 0.9 }}>
+                    Enkripsi private key & kunci transaksi Anda dengan standar AES-256 GCM.
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setSetupPinModalOpen(true)}
+                className="btn"
+                style={{
+                  background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                  color: '#ffffff',
+                  fontWeight: 600,
+                  fontSize: '0.78rem',
+                  padding: '7px 14px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  whiteSpace: 'nowrap',
+                  boxShadow: '0 2px 8px rgba(217, 119, 6, 0.35)',
+                  cursor: 'pointer'
+                }}
+              >
+                Atur PIN Sekarang
+              </button>
+            </div>
+          )}
+
           {/* Main Balance Overview */}
           <BalanceCard
             balance={nativeBalance}
@@ -501,6 +580,16 @@ export function App() {
         onClose={() => setScanQrModalOpen(false)}
         onWalletLogin={handleWalletLogin}
         onNotify={showNotification}
+      />
+
+      {/* Setup PIN Modal for Existing Users */}
+      <PinModal
+        isOpen={setupPinModalOpen}
+        mode="setup"
+        title="Buat PIN Keamanan (6 Digit)"
+        subtitle="PIN ini akan digunakan untuk mengenkripsi private key & mengunci transaksi di perangkat Anda."
+        onSuccess={handleSetupPinSuccess}
+        onCancel={() => setSetupPinModalOpen(false)}
       />
 
       {/* Toast Notification */}

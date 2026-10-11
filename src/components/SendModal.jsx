@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, Send, AlertCircle, CheckCircle2, ExternalLink, ArrowRight, Fuel } from 'lucide-react';
 import { validateAddress } from '../services/wallet';
 import { estimateTransferGas, sendTransfer } from '../services/tokens';
+import { PinModal } from './PinModal';
+import { hasPinConfigured, decryptWithPin } from '../services/security';
 
 export const SendModal = ({
   isOpen,
@@ -22,6 +24,7 @@ export const SendModal = ({
   const [isSending, setIsSending] = useState(false);
   const [sentTxHash, setSentTxHash] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
 
   // Reset or initialize when opened
   useEffect(() => {
@@ -102,30 +105,11 @@ export const SendModal = ({
     }
   };
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    setErrorMessage('');
-
-    if (!validateAddress(recipient)) {
-      setErrorMessage('Alamat penerima tidak valid (harus format 0x...).');
-      return;
-    }
-
-    const numAmount = parseFloat(amount);
-    if (isNaN(numAmount) || numAmount <= 0) {
-      setErrorMessage('Jumlah transfer harus lebih dari 0.');
-      return;
-    }
-
-    if (numAmount > parseFloat(currentMaxBalance)) {
-      setErrorMessage(`Saldo ${currentSymbol} tidak mencukupi.`);
-      return;
-    }
-
+  const executeSend = async (plainPrivateKey) => {
     setIsSending(true);
     try {
       const tx = await sendTransfer({
-        privateKey: activeWallet.privateKey,
+        privateKey: plainPrivateKey,
         toAddress: recipient.trim(),
         amount: amount.trim(),
         token: currentToken,
@@ -153,6 +137,55 @@ export const SendModal = ({
     } finally {
       setIsSending(false);
     }
+  };
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    setErrorMessage('');
+
+    if (activeWallet?.isWatchOnly) {
+      setErrorMessage('Akun ini adalah Watch-Only (hanya pantau) dan tidak memiliki Private Key untuk mengirim transaksi.');
+      return;
+    }
+
+    if (!validateAddress(recipient)) {
+      setErrorMessage('Alamat penerima tidak valid (harus format 0x...).');
+      return;
+    }
+
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      setErrorMessage('Jumlah transfer harus lebih dari 0.');
+      return;
+    }
+
+    if (numAmount > parseFloat(currentMaxBalance)) {
+      setErrorMessage(`Saldo ${currentSymbol} tidak mencukupi.`);
+      return;
+    }
+
+    // Require PIN verification if security PIN is configured
+    if (hasPinConfigured()) {
+      setIsPinModalOpen(true);
+      return;
+    }
+
+    // Direct send if user hasn't set up a PIN yet
+    await executeSend(activeWallet.privateKey);
+  };
+
+  const handlePinVerified = async (pin) => {
+    setIsPinModalOpen(false);
+    let key = activeWallet.privateKey;
+    if (key && typeof key === 'object') {
+      try {
+        key = await decryptWithPin(key, pin);
+      } catch (err) {
+        setErrorMessage('Gagal mendekripsi private key: ' + err.message);
+        return;
+      }
+    }
+    await executeSend(key);
   };
 
   const explorerTxUrl = sentTxHash && network.explorerUrl
@@ -398,6 +431,16 @@ export const SendModal = ({
           </form>
         )}
       </div>
+
+      {/* PIN Verification Modal */}
+      <PinModal
+        isOpen={isPinModalOpen}
+        mode="verify"
+        title="Otorisasi Transaksi"
+        subtitle={`Ketik 6 digit PIN untuk menyetujui transfer ${amount} ${currentSymbol}`}
+        onSuccess={handlePinVerified}
+        onCancel={() => setIsPinModalOpen(false)}
+      />
     </div>
   );
 };

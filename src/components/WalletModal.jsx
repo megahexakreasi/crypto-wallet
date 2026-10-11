@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Wallet, Plus, Download, Key, Shield, Copy, Check, Eye, EyeOff, AlertTriangle, Trash2, QrCode } from 'lucide-react';
+import { X, Wallet, Plus, Download, Key, Shield, Copy, Check, Eye, EyeOff, AlertTriangle, Trash2, QrCode, Lock } from 'lucide-react';
 import {
   createNewWallet,
   importWalletFromMnemonic,
@@ -7,6 +7,8 @@ import {
   importWatchOnlyWallet,
   formatAddress
 } from '../services/wallet';
+import { PinModal } from './PinModal';
+import { hasPinConfigured, decryptWallet } from '../services/security';
 
 export const WalletModal = ({
   isOpen,
@@ -32,8 +34,11 @@ export const WalletModal = ({
   const [importName, setImportName] = useState('Akun Pantau');
   const [importError, setImportError] = useState('');
 
-  // Export reveal state
+  // Export reveal state & PIN protection
   const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [unlockedCredentials, setUnlockedCredentials] = useState(null);
 
   if (!isOpen) return null;
 
@@ -119,26 +124,48 @@ export const WalletModal = ({
         <div className="tabs-nav" style={{ marginBottom: '18px' }}>
           <button
             className={`tab-btn ${tab === 'list' ? 'active' : ''}`}
-            onClick={() => { setTab('list'); setCreatedWalletData(null); }}
+            onClick={() => {
+              setTab('list');
+              setCreatedWalletData(null);
+              setIsUnlocked(false);
+              setUnlockedCredentials(null);
+              setShowPrivateKey(false);
+            }}
           >
             Daftar Akun
           </button>
           <button
             className={`tab-btn ${tab === 'create' ? 'active' : ''}`}
-            onClick={() => { setTab('create'); handleGenerateWallet(); }}
+            onClick={() => {
+              setTab('create');
+              handleGenerateWallet();
+              setIsUnlocked(false);
+              setUnlockedCredentials(null);
+              setShowPrivateKey(false);
+            }}
           >
             Buat Baru
           </button>
           <button
             className={`tab-btn ${tab === 'import' ? 'active' : ''}`}
-            onClick={() => setTab('import')}
+            onClick={() => {
+              setTab('import');
+              setIsUnlocked(false);
+              setUnlockedCredentials(null);
+              setShowPrivateKey(false);
+            }}
           >
             Impor Akun
           </button>
           {activeWallet && (
             <button
               className={`tab-btn ${tab === 'export' ? 'active' : ''}`}
-              onClick={() => setTab('export')}
+              onClick={() => {
+                setTab('export');
+                setIsUnlocked(false);
+                setUnlockedCredentials(null);
+                setShowPrivateKey(false);
+              }}
             >
               Kunci / Backup
             </button>
@@ -486,79 +513,185 @@ export const WalletModal = ({
               </div>
             </div>
 
-            {/* Mnemonic backup if available */}
-            {activeWallet.mnemonic && (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                    Seed Phrase (12 Kata)
-                  </label>
-                  <button
-                    onClick={() => handleCopy(activeWallet.mnemonic, 'Seed phrase')}
-                    className="btn btn-ghost"
-                    style={{ padding: '2px 8px', fontSize: '0.75rem' }}
-                  >
-                    <Copy size={12} /> Salin
-                  </button>
-                </div>
-                <div style={{
-                  background: 'rgba(0, 0, 0, 0.4)',
-                  padding: '12px',
-                  borderRadius: '10px',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '0.825rem',
-                  lineHeight: 1.6,
-                  border: '1px solid var(--border-color)'
-                }}>
-                  {activeWallet.mnemonic}
-                </div>
+            {activeWallet.isWatchOnly ? (
+              <div style={{
+                background: 'rgba(244, 63, 94, 0.08)',
+                border: '1px solid rgba(244, 63, 94, 0.25)',
+                padding: '16px',
+                borderRadius: '12px',
+                textAlign: 'center',
+                color: '#fda4af',
+                fontSize: '0.85rem'
+              }}>
+                <AlertTriangle size={24} style={{ margin: '0 auto 8px auto', display: 'block' }} />
+                Akun ini berjenis <strong>Watch-Only</strong> (hanya pantau). Anda tidak memiliki Seed Phrase atau Private Key untuk akun ini di perangkat ini.
               </div>
+            ) : hasPinConfigured() && !isUnlocked ? (
+              <div style={{
+                textAlign: 'center',
+                padding: '30px 20px',
+                background: 'rgba(255, 255, 255, 0.02)',
+                borderRadius: '16px',
+                border: '1px solid rgba(255, 255, 255, 0.08)'
+              }}>
+                <div style={{
+                  width: '52px',
+                  height: '52px',
+                  borderRadius: '16px',
+                  background: 'rgba(99, 102, 241, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#818cf8',
+                  margin: '0 auto 14px auto'
+                }}>
+                  <Lock size={26} />
+                </div>
+                <h4 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '6px' }}>
+                  Kunci Rahasia Terproteksi PIN
+                </h4>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', maxWidth: '360px', margin: '0 auto 20px auto', lineHeight: 1.5 }}>
+                  Frase Pemulihan & Private Key tersimpan aman dengan enkripsi AES-256 GCM. Masukkan 6-digit PIN keamanan Anda untuk membukanya.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsPinModalOpen(true)}
+                  className="btn btn-primary"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 20px' }}
+                >
+                  <Key size={16} /> Buka Kunci dengan PIN
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Mnemonic backup if available */}
+                {(unlockedCredentials?.mnemonic || (typeof activeWallet.mnemonic === 'string' && activeWallet.mnemonic)) && (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                        Seed Phrase (12 Kata)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(unlockedCredentials?.mnemonic || activeWallet.mnemonic, 'Seed phrase')}
+                        className="btn btn-ghost"
+                        style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                      >
+                        <Copy size={12} /> Salin
+                      </button>
+                    </div>
+                    <div style={{
+                      background: 'rgba(0, 0, 0, 0.4)',
+                      padding: '12px',
+                      borderRadius: '10px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.825rem',
+                      lineHeight: 1.6,
+                      border: '1px solid var(--border-color)'
+                    }}>
+                      {unlockedCredentials?.mnemonic || activeWallet.mnemonic}
+                    </div>
+                  </div>
+                )}
+
+                {/* Private key backup */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                      Private Key
+                    </label>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowPrivateKey(!showPrivateKey)}
+                        className="btn btn-ghost"
+                        style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                      >
+                        {showPrivateKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                        {showPrivateKey ? 'Sembunyikan' : 'Tampilkan'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(unlockedCredentials?.privateKey || activeWallet.privateKey, 'Private Key')}
+                        className="btn btn-ghost"
+                        style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                      >
+                        <Copy size={12} /> Salin
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{
+                    background: 'rgba(0, 0, 0, 0.4)',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.8rem',
+                    wordBreak: 'break-all',
+                    border: '1px solid var(--border-color)',
+                    color: showPrivateKey ? '#fda4af' : 'var(--text-muted)'
+                  }}>
+                    {showPrivateKey
+                      ? (unlockedCredentials?.privateKey || activeWallet.privateKey)
+                      : '••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••'}
+                  </div>
+                </div>
+
+                {hasPinConfigured() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsUnlocked(false);
+                      setUnlockedCredentials(null);
+                      setShowPrivateKey(false);
+                      onNotify?.('Kunci kembali terkunci.', 'info');
+                    }}
+                    className="btn btn-secondary"
+                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                  >
+                    <Lock size={14} /> Kunci Kembali
+                  </button>
+                )}
+              </>
             )}
 
-            {/* Private key backup */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                  Private Key
-                </label>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button
-                    onClick={() => setShowPrivateKey(!showPrivateKey)}
-                    className="btn btn-ghost"
-                    style={{ padding: '2px 8px', fontSize: '0.75rem' }}
-                  >
-                    {showPrivateKey ? <EyeOff size={12} /> : <Eye size={12} />}
-                    {showPrivateKey ? 'Sembunyikan' : 'Tampilkan'}
-                  </button>
-                  <button
-                    onClick={() => handleCopy(activeWallet.privateKey, 'Private Key')}
-                    className="btn btn-ghost"
-                    style={{ padding: '2px 8px', fontSize: '0.75rem' }}
-                  >
-                    <Copy size={12} /> Salin
-                  </button>
-                </div>
-              </div>
-              <div style={{
-                background: 'rgba(0, 0, 0, 0.4)',
-                padding: '12px',
-                borderRadius: '10px',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.8rem',
-                wordBreak: 'break-all',
-                border: '1px solid var(--border-color)',
-                color: showPrivateKey ? '#fda4af' : 'var(--text-muted)'
-              }}>
-                {showPrivateKey ? activeWallet.privateKey : '••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••'}
-              </div>
-            </div>
-
-            <button onClick={() => setTab('list')} className="btn btn-secondary" style={{ marginTop: '8px' }}>
+            <button
+              onClick={() => {
+                setTab('list');
+                setIsUnlocked(false);
+                setUnlockedCredentials(null);
+                setShowPrivateKey(false);
+              }}
+              className="btn btn-secondary"
+              style={{ marginTop: '8px' }}
+            >
               Tutup / Kembali
             </button>
           </div>
         )}
       </div>
+
+      {/* PIN Verification Modal */}
+      <PinModal
+        isOpen={isPinModalOpen}
+        mode="verify"
+        title="Buka Kunci Akses"
+        subtitle="Ketik 6 digit PIN untuk melihat Seed Phrase & Private Key."
+        onSuccess={async (pin) => {
+          setIsPinModalOpen(false);
+          try {
+            const dec = await decryptWallet(activeWallet, pin);
+            setUnlockedCredentials({
+              privateKey: dec.privateKey,
+              mnemonic: dec.mnemonic
+            });
+            setIsUnlocked(true);
+            onNotify?.('Kunci berhasil dibuka!', 'success');
+          } catch (err) {
+            onNotify?.(err.message || 'Gagal mendekripsi kunci.', 'error');
+          }
+        }}
+        onCancel={() => setIsPinModalOpen(false)}
+      />
     </div>
   );
 };
