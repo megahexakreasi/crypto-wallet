@@ -59,28 +59,58 @@ export const StatementHistory = ({
       tokenByHash[t.hash.toLowerCase()] = t;
     });
 
-    const combined = [...transactions, ...tokenTransfers];
-    const seen = new Set();
-    return combined
-      .filter((item) => {
-        const key = item.hash + (item.type || '') + (item.symbol || '');
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map((item) => {
-        // Mark zero-value native/internal txs as gas fee entries
-        // when the same hash has a token transfer
-        if ((item.type === 'native' || item.type === 'internal') && parseFloat(item.value || '0') === 0) {
-          const linkedToken = tokenByHash[item.hash.toLowerCase()];
-          if (linkedToken) {
-            return { ...item, isGasFeeEntry: true, linkedToken };
-          }
+    const list = [];
+
+    // 1. Process native transactions
+    transactions.forEach((tx) => {
+      const isTokenCall = parseFloat(tx.value || '0') === 0 && tokenByHash[tx.hash.toLowerCase()];
+
+      if (isTokenCall) {
+        // This is a contract call for a token transfer -> show as Gas Fee row
+        const linkedToken = tokenByHash[tx.hash.toLowerCase()];
+        list.push({
+          ...tx,
+          uniqueKey: tx.hash + '-gas',
+          isGasFeeEntry: true,
+          linkedToken
+        });
+      } else {
+        // Normal native transaction (Kirim/Terima MTT)
+        list.push({
+          ...tx,
+          uniqueKey: tx.hash + '-native'
+        });
+
+        // If this is an outgoing native transaction, ALSO generate its companion Gas Fee row
+        if (tx.isOutgoing && tx.gasUsed && tx.gasPrice) {
+          list.push({
+            ...tx,
+            uniqueKey: tx.hash + '-gas',
+            isGasFeeEntry: true,
+            linkedNative: {
+              symbol: tx.symbol || network.symbol,
+              value: tx.value
+            }
+          });
         }
-        return item;
-      })
-      .sort((a, b) => (b.timeStamp || 0) - (a.timeStamp || 0));
-  }, [transactions, tokenTransfers]);
+      }
+    });
+
+    // 2. Process token transfers
+    tokenTransfers.forEach((tx) => {
+      list.push({
+        ...tx,
+        uniqueKey: tx.hash + '-token'
+      });
+    });
+
+    return list.sort((a, b) => {
+      if (b.timeStamp === a.timeStamp && a.hash === b.hash) {
+        return a.isGasFeeEntry ? -1 : 1;
+      }
+      return (b.timeStamp || 0) - (a.timeStamp || 0);
+    });
+  }, [transactions, tokenTransfers, network]);
 
   // Apply date range + type filter + search
   const filteredTransactions = useMemo(() => {
@@ -158,6 +188,17 @@ export const StatementHistory = ({
     let tokenOutCount = 0;
 
     filteredTransactions.forEach((tx) => {
+      if (tx.isGasFeeEntry) {
+        let gasVal = 0;
+        if (tx.gasUsed && tx.gasPrice) {
+          try {
+            gasVal = Number(BigInt(tx.gasUsed) * BigInt(tx.gasPrice)) / 1e18;
+          } catch { gasVal = 0; }
+        }
+        totalOut += gasVal;
+        nativeOut += gasVal;
+        return;
+      }
       const val = parseFloat(tx.value || '0');
       if (tx.isOutgoing) {
         totalOut += val;
@@ -182,21 +223,31 @@ export const StatementHistory = ({
     };
   }, [filteredTransactions]);
 
-  // Running balance calculation (for native transactions only)
+  // Running balance calculation (for native transactions and gas fees)
   const runningBalances = useMemo(() => {
     const currentBal = parseFloat(nativeBalance || '0');
-    const nativeTxs = filteredTransactions.filter((tx) => tx.type === 'native' || tx.type === 'internal');
+    const nativeTxs = filteredTransactions.filter((tx) => tx.type === 'native' || tx.type === 'internal' || tx.isGasFeeEntry);
     const balances = new Map();
 
     let runningBal = currentBal;
     // Start from most recent, go backwards
     nativeTxs.forEach((tx) => {
-      balances.set(tx.hash, runningBal);
-      const val = parseFloat(tx.value || '0');
-      if (tx.isOutgoing) {
-        runningBal += val; // undo the outgoing to get previous balance
+      balances.set(tx.uniqueKey || tx.hash, runningBal);
+      if (tx.isGasFeeEntry) {
+        let gasVal = 0;
+        if (tx.gasUsed && tx.gasPrice) {
+          try {
+            gasVal = Number(BigInt(tx.gasUsed) * BigInt(tx.gasPrice)) / 1e18;
+          } catch { gasVal = 0; }
+        }
+        runningBal += gasVal;
       } else {
-        runningBal -= val; // undo the incoming to get previous balance
+        const val = parseFloat(tx.value || '0');
+        if (tx.isOutgoing) {
+          runningBal += val; // undo the outgoing to get previous balance
+        } else {
+          runningBal -= val; // undo the incoming to get previous balance
+        }
       }
     });
 
@@ -817,7 +868,7 @@ export const StatementHistory = ({
                   const isOut = tx.isOutgoing;
                   const isCopied = copiedHash === tx.hash;
                   const explorerTxUrl = network.explorerUrl ? `${network.explorerUrl}/tx/${tx.hash}` : null;
-                  const rb = runningBalances.get(tx.hash);
+                  const rb = runningBalances.get(tx.uniqueKey || tx.hash);
 
                   // Calculate gas fee
                   let gasFee = null;
@@ -837,7 +888,7 @@ export const StatementHistory = ({
 
                   return (
                     <div
-                      key={tx.hash + '-' + idx}
+                      key={(tx.uniqueKey || tx.hash) + '-' + idx}
                       className="statement-row"
                       style={{
                         display: 'grid',
@@ -872,9 +923,16 @@ export const StatementHistory = ({
                             isOut ? <ArrowUpRight size={13} color="#fb7185" /> : <ArrowDownLeft size={13} color="#34d399" />
                           )}
                         </div>
-                        <span style={{ fontSize: '0.68rem', fontWeight: 700, color: isGasFee ? '#fbbf24' : (isToken ? '#818cf8' : (isInternal ? '#22d3ee' : 'var(--text-primary)')), lineHeight: 1.2 }}>
-                          {isGasFee ? 'Gas Fee' : (tx.tokenName || coinSymbol)}
-                        </span>
+                        {isGasFee ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
+                            <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#fbbf24' }}>Gas</span>
+                            <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#fbbf24' }}>Fee</span>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '0.68rem', fontWeight: 700, color: isToken ? '#818cf8' : (isInternal ? '#22d3ee' : 'var(--text-primary)'), lineHeight: 1.2 }}>
+                            {tx.tokenName || coinSymbol}
+                          </span>
+                        )}
                       </div>
 
                       {/* Col 2: TxHash */}
@@ -942,10 +1000,21 @@ export const StatementHistory = ({
                             }}>GAGAL</span>
                           )}
                         </div>
-                        {/* Show linked token info below gas fee entry */}
+                        {/* Show linked token or native info below gas fee entry */}
                         {isGasFee && tx.linkedToken && (
                           <div style={{ fontSize: '0.66rem', color: '#818cf8', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
                             {tx.linkedToken.symbol} {formatCurrency(tx.linkedToken.value, 6)}
+                          </div>
+                        )}
+                        {isGasFee && tx.linkedNative && (
+                          <div style={{ fontSize: '0.66rem', color: '#10b981', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
+                            {tx.linkedNative.symbol} {formatCurrency(tx.linkedNative.value, 4)}
+                          </div>
+                        )}
+                        {/* Show gas fee note on regular outgoing row */}
+                        {!isGasFee && isOut && gasFee !== null && (
+                          <div style={{ fontSize: '0.64rem', color: '#fbbf24', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
+                            ⛽ {gasFee < 0.0001 ? gasFee.toExponential(2) : gasFee.toFixed(6)} {network.symbol}
                           </div>
                         )}
                       </div>
